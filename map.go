@@ -51,7 +51,7 @@ func (m *Map[K, V]) Set(key K, value V) {
 	m.insertKeyValuePair(key, value, k0, k1)
 }
 
-func (m *Map[K, V]) Get(key K) (value V, ok bool) {
+func (m *Map[K, V]) Get(key K) (value V, index uint64, ok bool) {
 	// The PSL of keys clusters around the mean PSL (roughly).
 	// Therefore, start search using the mean PSL and iteratively
 	// branch out above and below that value.
@@ -61,18 +61,33 @@ func (m *Map[K, V]) Get(key K) (value V, ok bool) {
 
 	for ; downPsl >= m.minPsl && upPsl <= m.maxPsl; downPsl, upPsl = downPsl-1, upPsl+1 {
 		downIndex := m.getIndexOfKeyAtPsl(key, downPsl, k0, k1)
-		if m.elements[downIndex].key == key {
-			return m.elements[downIndex].value, true
+		if m.elements[downIndex].set && m.elements[downIndex].key == key {
+			return m.elements[downIndex].value, downIndex, true
 		}
 
 		upIndex := m.getIndexOfKeyAtPsl(key, upPsl, k0, k1)
-		if m.elements[upIndex].key == key {
-			return m.elements[upIndex].value, true
+		if m.elements[upIndex].set && m.elements[upIndex].key == key {
+			return m.elements[upIndex].value, downIndex, true
 		}
 	}
 
 	var zeroVal V
-	return zeroVal, false
+	return zeroVal, 0, false
+}
+
+func (m *Map[K, V]) Delete(key K) {
+	_, i, ok := m.Get(key)
+
+	if ok {
+		m.elements[i] = element[K, V]{}
+
+		for elem := m.elements[i+1]; elem.set && elem.psl > 0; elem = m.elements[i+1] {
+			elem.psl--
+			m.elements[i] = elem
+			m.elements[i+1] = element[K, V]{}
+			i++
+		}
+	}
 }
 
 func (m *Map[K, V]) getIndexOfKeyAtPsl(key K, psl uint, k0, k1 uint64) uint64 {
