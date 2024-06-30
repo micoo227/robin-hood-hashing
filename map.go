@@ -2,9 +2,9 @@ package rhmap
 
 import (
 	"bytes"
-	"encoding/binary"
 	"encoding/gob"
 	"log"
+	"math/rand"
 
 	"github.com/dchest/siphash"
 )
@@ -13,7 +13,7 @@ import (
 type element[K comparable, V any] struct {
 	key   K
 	value V
-	psl   int
+	psl   uint
 	set   bool
 }
 
@@ -24,6 +24,9 @@ type Map[K comparable, V any] struct {
 	elements    []element[K, V]
 	size        uint64
 	loadFactor  float32
+	averagePsl  uint
+	maxPsl      uint
+	minPsl      uint
 }
 
 func New[K comparable, V any](size uint64) *Map[K, V] {
@@ -49,7 +52,34 @@ func (m *Map[K, V]) Set(key K, value V) {
 }
 
 func (m *Map[K, V]) Get(key K) (value V, ok bool) {
+	// The PSL of keys clusters around the mean PSL (roughly).
+	// Therefore, start search using the mean PSL and iteratively
+	// branch out above and below that value.
+	downPsl := m.averagePsl
+	upPsl := downPsl + 1
+	k0, k1 := createHashingKeys()
 
+	for ; downPsl >= m.minPsl && upPsl <= m.maxPsl; downPsl, upPsl = downPsl-1, upPsl+1 {
+		downIndex := m.getIndexOfKeyAtPsl(key, downPsl, k0, k1)
+		if m.elements[downIndex].key == key {
+			return m.elements[downIndex].value, true
+		}
+
+		upIndex := m.getIndexOfKeyAtPsl(key, upPsl, k0, k1)
+		if m.elements[upIndex].key == key {
+			return m.elements[upIndex].value, true
+		}
+	}
+
+	var zeroVal V
+	return zeroVal, false
+}
+
+func (m *Map[K, V]) getIndexOfKeyAtPsl(key K, psl uint, k0, k1 uint64) uint64 {
+	encodedBytes := encodeKey(key)
+	hash := m.hasher(k0, k1, encodedBytes)
+	i := hash % m.size
+	return i + uint64(psl)
 }
 
 func (m *Map[K, V]) rehashTable() {
@@ -73,14 +103,27 @@ func (m *Map[K, V]) insertKeyValuePair(key K, value V, k0, k1 uint64) {
 	// Calculate i in this way to wrap around array when i >= m.size
 	for ; m.elements[i].set; i = (i + 1) % m.size {
 		if newElem.psl > m.elements[i].psl {
-			temp := m.elements[i]
+			oldElem := m.elements[i]
 			m.elements[i] = newElem
-			newElem = temp
+
+			m.updatePslAverage(oldElem.psl, newElem.psl)
+
+			newElem = oldElem
 		}
 		newElem.psl += 1
 	}
 
 	m.elements[i] = newElem
+	m.numElements++
+
+	if newElem.psl > m.maxPsl {
+		m.maxPsl = newElem.psl
+	}
+	m.averagePsl = uint((uint64(m.averagePsl)*m.numElements + uint64(newElem.psl)) / m.numElements)
+}
+
+func (m *Map[K, V]) updatePslAverage(oldPsl, newPsl uint) {
+	m.averagePsl = uint((uint64(m.averagePsl)*m.numElements - uint64(oldPsl) + uint64(newPsl)) / m.numElements)
 }
 
 func encodeKey[T comparable](key T) []byte {
@@ -94,12 +137,6 @@ func encodeKey[T comparable](key T) []byte {
 }
 
 func createHashingKeys() (uint64, uint64) {
-	var k [16]byte
-	for i := range k {
-		k[i] = byte(i)
-	}
-
-	k0 := binary.LittleEndian.Uint64(k[0:8])
-	k1 := binary.LittleEndian.Uint64(k[8:16])
+	k0, k1 := rand.Uint64(), rand.Uint64()
 	return k0, k1
 }
