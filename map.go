@@ -9,6 +9,9 @@ import (
 	"github.com/dchest/siphash"
 )
 
+// Default size for hash map when no size is specified on instantiation
+const defaultSize uint64 = 8
+
 // Item in hashmap
 type element[K comparable, V any] struct {
 	key   K
@@ -20,6 +23,8 @@ type element[K comparable, V any] struct {
 // Implementation of robin hood hashmap
 type Map[K comparable, V any] struct {
 	hasher      func(k0, k1 uint64, p []byte) uint64
+	k0          uint64
+	k1          uint64
 	numElements uint64
 	elements    []element[K, V]
 	size        uint64
@@ -29,12 +34,19 @@ type Map[K comparable, V any] struct {
 	minPsl      uint
 }
 
-func New[K comparable, V any](size uint64) *Map[K, V] {
+func New[K comparable, V any](size ...uint64) *Map[K, V] {
+	mapSize := defaultSize
+	if len(size) > 0 && size[0] > 0 {
+		mapSize = size[0]
+	}
+
 	return &Map[K, V]{
 		hasher:      siphash.Hash,
+		k0:          rand.Uint64(),
+		k1:          rand.Uint64(),
 		numElements: 0,
-		elements:    make([]element[K, V], size),
-		size:        size,
+		elements:    make([]element[K, V], mapSize),
+		size:        mapSize,
 		loadFactor:  .9,
 	}
 }
@@ -47,36 +59,39 @@ func (m *Map[K, V]) Set(key K, value V) {
 		m.rehashTable()
 	}
 
-	k0, k1 := createHashingKeys()
-	m.insertKeyValuePair(key, value, k0, k1)
+	m.insertKeyValuePair(key, value)
 }
 
-func (m *Map[K, V]) Get(key K) (value V, index uint64, ok bool) {
+func (m *Map[K, V]) Get(key K) (V, bool) {
+	val, ok, _ := m.GetWithIndex(key)
+	return val, ok
+}
+
+func (m *Map[K, V]) GetWithIndex(key K) (V, bool, uint64) {
 	// The PSL of keys clusters around the mean PSL (roughly).
 	// Therefore, start search using the mean PSL and iteratively
 	// branch out above and below that value.
 	downPsl := m.averagePsl
 	upPsl := downPsl + 1
-	k0, k1 := createHashingKeys()
 
 	for ; downPsl >= m.minPsl && upPsl <= m.maxPsl; downPsl, upPsl = downPsl-1, upPsl+1 {
-		downIndex := m.getIndexOfKeyAtPsl(key, downPsl, k0, k1)
+		downIndex := m.getIndexOfKeyAtPsl(key, downPsl)
 		if m.elements[downIndex].set && m.elements[downIndex].key == key {
-			return m.elements[downIndex].value, downIndex, true
+			return m.elements[downIndex].value, true, downIndex
 		}
 
-		upIndex := m.getIndexOfKeyAtPsl(key, upPsl, k0, k1)
+		upIndex := m.getIndexOfKeyAtPsl(key, upPsl)
 		if m.elements[upIndex].set && m.elements[upIndex].key == key {
-			return m.elements[upIndex].value, downIndex, true
+			return m.elements[upIndex].value, true, downIndex
 		}
 	}
 
 	var zeroVal V
-	return zeroVal, 0, false
+	return zeroVal, false, 0
 }
 
 func (m *Map[K, V]) Delete(key K) {
-	_, i, ok := m.Get(key)
+	_, ok, i := m.GetWithIndex(key)
 
 	if ok {
 		m.elements[i] = element[K, V]{}
@@ -90,9 +105,9 @@ func (m *Map[K, V]) Delete(key K) {
 	}
 }
 
-func (m *Map[K, V]) getIndexOfKeyAtPsl(key K, psl uint, k0, k1 uint64) uint64 {
+func (m *Map[K, V]) getIndexOfKeyAtPsl(key K, psl uint) uint64 {
 	encodedBytes := encodeKey(key)
-	hash := m.hasher(k0, k1, encodedBytes)
+	hash := m.hasher(m.k0, m.k1, encodedBytes)
 	i := hash % m.size
 	return i + uint64(psl)
 }
@@ -102,16 +117,14 @@ func (m *Map[K, V]) rehashTable() {
 	oldElems := m.elements
 	m.elements = make([]element[K, V], m.size)
 
-	k0, k1 := createHashingKeys()
-
 	for _, elem := range oldElems {
-		m.insertKeyValuePair(elem.key, elem.value, k0, k1)
+		m.insertKeyValuePair(elem.key, elem.value)
 	}
 }
 
-func (m *Map[K, V]) insertKeyValuePair(key K, value V, k0, k1 uint64) {
+func (m *Map[K, V]) insertKeyValuePair(key K, value V) {
 	encodedBytes := encodeKey(key)
-	hash := m.hasher(k0, k1, encodedBytes)
+	hash := m.hasher(m.k0, m.k1, encodedBytes)
 	i := hash % m.size
 
 	newElem := element[K, V]{key: key, value: value, psl: 0, set: true}
@@ -151,7 +164,6 @@ func encodeKey[T comparable](key T) []byte {
 	return buffer.Bytes()
 }
 
-func createHashingKeys() (uint64, uint64) {
-	k0, k1 := rand.Uint64(), rand.Uint64()
-	return k0, k1
+func (m *Map[K, V]) Len() uint64 {
+	return m.numElements
 }
