@@ -29,9 +29,9 @@ type Map[K comparable, V any] struct {
 	elements    []element[K, V]
 	size        uint64
 	loadFactor  float32
-	averagePsl  uint
+	totalPsl    uint64
 	maxPsl      uint
-	minPsl      uint
+	maxFreq     uint
 }
 
 func New[K comparable, V any](size ...uint64) *Map[K, V] {
@@ -71,22 +71,52 @@ func (m *Map[K, V]) GetWithIndex(key K) (V, bool, uint64) {
 	// The PSL of keys clusters around the mean PSL (roughly).
 	// Therefore, start search using the mean PSL and iteratively
 	// branch out above and below that value.
-	downPsl := m.averagePsl
+	downPsl := uint(m.totalPsl / m.numElements)
 	upPsl := downPsl + 1
+	var zeroVal V
 
-	for ; downPsl >= m.minPsl && upPsl <= m.maxPsl; downPsl, upPsl = downPsl-1, upPsl+1 {
+	for ; downPsl >= 0 && upPsl <= m.maxPsl; downPsl, upPsl = downPsl-1, upPsl+1 {
 		downIndex := m.getIndexOfKeyAtPsl(key, downPsl)
+		upIndex := m.getIndexOfKeyAtPsl(key, upPsl)
+
+		// New elements replace elements with lesser PSLs.
+		// The key does not exist in the map if this is violated.
+		if m.elements[downIndex].psl < downPsl || m.elements[upIndex].psl < upPsl {
+			return zeroVal, false, 0
+		}
+
 		if m.elements[downIndex].set && m.elements[downIndex].key == key {
 			return m.elements[downIndex].value, true, downIndex
 		}
-
-		upIndex := m.getIndexOfKeyAtPsl(key, upPsl)
 		if m.elements[upIndex].set && m.elements[upIndex].key == key {
-			return m.elements[upIndex].value, true, downIndex
+			return m.elements[upIndex].value, true, upIndex
 		}
 	}
 
-	var zeroVal V
+	for ; downPsl >= 0; downPsl-- {
+		downIndex := m.getIndexOfKeyAtPsl(key, downPsl)
+
+		if m.elements[downIndex].psl < downPsl {
+			return zeroVal, false, 0
+		}
+
+		if m.elements[downIndex].set && m.elements[downIndex].key == key {
+			return m.elements[downIndex].value, true, downIndex
+		}
+	}
+
+	for ; upPsl <= m.maxPsl; upPsl++ {
+		upIndex := m.getIndexOfKeyAtPsl(key, upPsl)
+
+		if m.elements[upIndex].psl < upPsl {
+			return zeroVal, false, 0
+		}
+
+		if m.elements[upIndex].set && m.elements[upIndex].key == key {
+			return m.elements[upIndex].value, true, upIndex
+		}
+	}
+
 	return zeroVal, false, 0
 }
 
@@ -94,13 +124,25 @@ func (m *Map[K, V]) Delete(key K) {
 	_, ok, i := m.GetWithIndex(key)
 
 	if ok {
+		m.totalPsl -= uint64(m.elements[i].psl)
+		m.numElements--
+		if m.numElements == 0 {
+			m.maxFreq = 0
+			m.maxPsl = 0
+		} else if m.elements[i].psl == m.maxPsl {
+			m.updateMaxStatsOnDelete()
+		}
 		m.elements[i] = element[K, V]{}
 
-		for elem := m.elements[i+1]; elem.set && elem.psl > 0; elem = m.elements[i+1] {
-			elem.psl--
-			m.elements[i] = elem
-			m.elements[i+1] = element[K, V]{}
-			i++
+		// Calculate i, j in this way to wrap around array when i, j >= m.size
+		for j := i + 1; m.elements[j].set && m.elements[j].psl > 0; i, j = (i+1)%m.size, (j+1)%m.size {
+			if m.elements[i].psl == m.maxPsl {
+				m.updateMaxStatsOnDelete()
+			}
+			m.elements[j].psl--
+			m.totalPsl--
+			m.elements[i] = m.elements[j]
+			m.elements[j] = element[K, V]{}
 		}
 	}
 }
@@ -134,7 +176,8 @@ func (m *Map[K, V]) insertKeyValuePair(key K, value V) {
 			oldElem := m.elements[i]
 			m.elements[i] = newElem
 
-			m.updatePslAverage(oldElem.psl, newElem.psl)
+			m.updateMaxStatsOnInsert(newElem.psl)
+			m.totalPsl += uint64(newElem.psl - oldElem.psl)
 
 			newElem = oldElem
 		}
@@ -144,14 +187,25 @@ func (m *Map[K, V]) insertKeyValuePair(key K, value V) {
 	m.elements[i] = newElem
 	m.numElements++
 
-	if newElem.psl > m.maxPsl {
-		m.maxPsl = newElem.psl
-	}
-	m.averagePsl = uint((uint64(m.averagePsl)*m.numElements + uint64(newElem.psl)) / m.numElements)
+	m.updateMaxStatsOnInsert(newElem.psl)
+	m.totalPsl += uint64(newElem.psl)
 }
 
-func (m *Map[K, V]) updatePslAverage(oldPsl, newPsl uint) {
-	m.averagePsl = uint((uint64(m.averagePsl)*m.numElements - uint64(oldPsl) + uint64(newPsl)) / m.numElements)
+func (m *Map[K, V]) updateMaxStatsOnInsert(newElemPsl uint) {
+	if newElemPsl > m.maxPsl {
+		m.maxPsl = newElemPsl
+		m.maxFreq = 1
+	} else if newElemPsl == m.maxPsl {
+		m.maxFreq++
+	}
+}
+
+func (m *Map[K, V]) updateMaxStatsOnDelete() {
+	if m.maxFreq == 1 {
+		m.maxPsl--
+	} else {
+		m.maxFreq--
+	}
 }
 
 func encodeKey[T comparable](key T) []byte {
