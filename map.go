@@ -53,9 +53,9 @@ func New[K comparable, V any](size ...uint64) *Map[K, V] {
 
 func (m *Map[K, V]) Set(key K, value V) {
 
-	load := m.numElements / m.size
+	load := float32(float64(m.numElements) / float64(m.size))
 
-	if load >= uint64(m.loadFactor) {
+	if load >= m.loadFactor {
 		m.rehashTable()
 	}
 
@@ -79,12 +79,6 @@ func (m *Map[K, V]) GetWithIndex(key K) (V, bool, uint64) {
 		downIndex := m.getIndexOfKeyAtPsl(key, downPsl)
 		upIndex := m.getIndexOfKeyAtPsl(key, upPsl)
 
-		// New elements replace elements with lesser PSLs.
-		// The key does not exist in the map if this is violated.
-		if m.elements[downIndex].psl < downPsl || m.elements[upIndex].psl < upPsl {
-			return zeroVal, false, 0
-		}
-
 		if m.elements[downIndex].set && m.elements[downIndex].key == key {
 			return m.elements[downIndex].value, true, downIndex
 		}
@@ -96,10 +90,6 @@ func (m *Map[K, V]) GetWithIndex(key K) (V, bool, uint64) {
 	for ; downPsl >= 0; downPsl-- {
 		downIndex := m.getIndexOfKeyAtPsl(key, downPsl)
 
-		if m.elements[downIndex].psl < downPsl {
-			return zeroVal, false, 0
-		}
-
 		if m.elements[downIndex].set && m.elements[downIndex].key == key {
 			return m.elements[downIndex].value, true, downIndex
 		}
@@ -107,10 +97,6 @@ func (m *Map[K, V]) GetWithIndex(key K) (V, bool, uint64) {
 
 	for ; upPsl <= m.maxPsl; upPsl++ {
 		upIndex := m.getIndexOfKeyAtPsl(key, upPsl)
-
-		if m.elements[upIndex].psl < upPsl {
-			return zeroVal, false, 0
-		}
 
 		if m.elements[upIndex].set && m.elements[upIndex].key == key {
 			return m.elements[upIndex].value, true, upIndex
@@ -151,13 +137,17 @@ func (m *Map[K, V]) getIndexOfKeyAtPsl(key K, psl uint) uint64 {
 	encodedBytes := encodeKey(key)
 	hash := m.hasher(m.k0, m.k1, encodedBytes)
 	i := hash % m.size
-	return i + uint64(psl)
+	return (i + uint64(psl)) % m.size
 }
 
 func (m *Map[K, V]) rehashTable() {
 	m.size *= 2
 	oldElems := m.elements
 	m.elements = make([]element[K, V], m.size)
+	m.numElements = 0
+	m.totalPsl = 0
+	m.maxPsl = 0
+	m.maxFreq = 0
 
 	for _, elem := range oldElems {
 		m.insertKeyValuePair(elem.key, elem.value)
