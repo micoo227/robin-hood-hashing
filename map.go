@@ -68,15 +68,19 @@ func (m *Map[K, V]) Get(key K) (V, bool) {
 }
 
 func (m *Map[K, V]) GetWithIndex(key K) (V, bool, uint64) {
+	var zeroVal V
+	if m.numElements == 0 {
+		return zeroVal, false, 0
+	}
+
 	// The PSL of keys clusters around the mean PSL (roughly).
 	// Therefore, start search using the mean PSL and iteratively
 	// branch out above and below that value.
-	downPsl := uint(m.totalPsl / m.numElements)
-	upPsl := downPsl + 1
-	var zeroVal V
+	downPsl := int(m.totalPsl / m.numElements)
+	upPsl := uint(downPsl + 1)
 
 	for ; downPsl >= 0 && upPsl <= m.maxPsl; downPsl, upPsl = downPsl-1, upPsl+1 {
-		downIndex := m.getIndexOfKeyAtPsl(key, downPsl)
+		downIndex := m.getIndexOfKeyAtPsl(key, uint(downPsl))
 		upIndex := m.getIndexOfKeyAtPsl(key, upPsl)
 
 		if m.elements[downIndex].set && m.elements[downIndex].key == key {
@@ -88,7 +92,7 @@ func (m *Map[K, V]) GetWithIndex(key K) (V, bool, uint64) {
 	}
 
 	for ; downPsl >= 0; downPsl-- {
-		downIndex := m.getIndexOfKeyAtPsl(key, downPsl)
+		downIndex := m.getIndexOfKeyAtPsl(key, uint(downPsl))
 
 		if m.elements[downIndex].set && m.elements[downIndex].key == key {
 			return m.elements[downIndex].value, true, downIndex
@@ -107,6 +111,10 @@ func (m *Map[K, V]) GetWithIndex(key K) (V, bool, uint64) {
 }
 
 func (m *Map[K, V]) Delete(key K) {
+	if m.numElements == 0 {
+		return
+	}
+
 	_, ok, i := m.GetWithIndex(key)
 
 	if ok {
@@ -121,7 +129,7 @@ func (m *Map[K, V]) Delete(key K) {
 		m.elements[i] = element[K, V]{}
 
 		// Calculate i, j in this way to wrap around array when i, j >= m.size
-		for j := i + 1; m.elements[j].set && m.elements[j].psl > 0; i, j = (i+1)%m.size, (j+1)%m.size {
+		for j := (i + 1) % m.size; m.elements[j].set && m.elements[j].psl > 0; i, j = (i+1)%m.size, (j+1)%m.size {
 			if m.elements[i].psl == m.maxPsl {
 				m.updateMaxStatsOnDelete()
 			}
