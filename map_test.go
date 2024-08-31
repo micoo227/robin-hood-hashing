@@ -31,3 +31,29 @@ func TestSet(t *testing.T) {
 		}
 	}
 }
+
+func TestUpdate(t *testing.T) {
+	m := New[int, string]()
+
+	m.Set(1, "apple")
+	val, ok := m.Get(1)
+	if !ok {
+		t.Error("Ok should be true for key '1' stored in the map.")
+	}
+	if val != "apple" {
+		t.Errorf("Val mapped to key '1' was %s. Expected 'apple'", val)
+	}
+
+	m.Set(1, "banana")
+	if m.Len() != 1 {
+		t.Errorf("Map should only contain 1 element. Found %d", m.Len())
+	}
+	val, ok = m.Get(1)
+	if !ok {
+		t.Error("Ok should be true for key '1' stored in the map.")
+	}
+	if val != "banana" {
+		t.Errorf("Val mapped to key '1' was %s. Expected 'banana'", val)
+	}
+}
+

@@ -59,6 +59,12 @@ func (m *Map[K, V]) Set(key K, value V) {
 		m.rehashTable()
 	}
 
+	_, ok, i := m.GetWithIndex(key)
+	if ok {
+		m.elements[i].value = value
+		return
+	}
+
 	m.insertKeyValuePair(key, value)
 }
 
